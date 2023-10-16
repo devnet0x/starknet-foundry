@@ -1,7 +1,9 @@
 use cairo_felt::Felt252;
 use camino::Utf8PathBuf;
-use cheatnet::rpc::call_contract;
-use cheatnet::{cheatcodes::ContractArtifacts, rpc::CallContractOutput, CheatnetState};
+use cheatnet::cheatcodes::deploy::deploy;
+use cheatnet::rpc::{call_contract, CallContractFailure, CallContractResult};
+use cheatnet::state::{BlockifierState, CheatnetState};
+use cheatnet::{cheatcodes::ContractArtifacts, rpc::CallContractOutput};
 use conversions::StarknetConversions;
 use starknet::core::utils::get_selector_from_name;
 use starknet_api::core::ContractAddress;
@@ -17,10 +19,12 @@ pub mod scarb;
 pub mod state;
 
 pub fn recover_data(output: CallContractOutput) -> Vec<Felt252> {
-    match output {
-        CallContractOutput::Success { ret_data, .. } => ret_data,
-        CallContractOutput::Panic { panic_data, .. } => panic_data,
-        CallContractOutput::Error { msg, .. } => panic!("Call failed with message: {msg}"),
+    match output.result {
+        CallContractResult::Success { ret_data, .. } => ret_data,
+        CallContractResult::Failure(failure_type) => match failure_type {
+            CallContractFailure::Panic { panic_data, .. } => panic_data,
+            CallContractFailure::Error { msg, .. } => panic!("Call failed with message: {msg}"),
+        },
     }
 }
 
@@ -36,27 +40,35 @@ pub fn get_contracts() -> HashMap<String, ContractArtifacts> {
 }
 
 pub fn deploy_contract(
-    state: &mut CheatnetState,
+    blockifier_state: &mut BlockifierState,
+    cheatnet_state: &mut CheatnetState,
     contract_name: &str,
     calldata: &[Felt252],
 ) -> ContractAddress {
     let contract = contract_name.to_owned().to_felt252();
     let contracts = get_contracts();
 
-    let class_hash = state.declare(&contract, &contracts).unwrap();
-    state
-        .deploy(&class_hash, calldata)
+    let class_hash = blockifier_state.declare(&contract, &contracts).unwrap();
+    deploy(blockifier_state, cheatnet_state, &class_hash, calldata)
         .unwrap()
         .contract_address
 }
 
 pub fn call_contract_getter_by_name(
-    state: &mut CheatnetState,
+    blockifier_state: &mut BlockifierState,
+    cheatnet_state: &mut CheatnetState,
     contract_address: &ContractAddress,
     fn_name: &str,
 ) -> CallContractOutput {
     let selector = felt_selector_from_name(fn_name);
-    let result = call_contract(contract_address, &selector, vec![].as_slice(), state).unwrap();
+    let result = call_contract(
+        blockifier_state,
+        cheatnet_state,
+        contract_address,
+        &selector,
+        vec![].as_slice(),
+    )
+    .unwrap();
 
     result
 }

@@ -1,6 +1,7 @@
 use crate::cheatcodes;
 use crate::cheatcodes::spy_events::{Event, SpyTarget};
 use crate::forking::state::ForkStateReader;
+use blockifier::state::state_api::State;
 use blockifier::{
     execution::contract_class::ContractClass,
     state::{
@@ -12,6 +13,7 @@ use blockifier::{
 use cairo_felt::Felt252;
 use cheatcodes::spoof::TxInfoMock;
 use starknet_api::core::EntryPointSelector;
+use starknet_api::transaction::ContractAddressSalt;
 use starknet_api::{
     core::{ClassHash, CompiledClassHash, ContractAddress, Nonce},
     hash::StarkFelt,
@@ -23,6 +25,19 @@ use std::collections::HashMap;
 pub struct ExtendedStateReader {
     pub dict_state_reader: DictStateReader,
     pub fork_state_reader: Option<ForkStateReader>,
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub struct BlockifierState<'a> {
+    pub blockifier_state: &'a mut dyn State,
+}
+
+impl<'a> BlockifierState<'a> {
+    pub fn from(state: &'a mut dyn State) -> Self {
+        BlockifierState {
+            blockifier_state: state,
+        }
+    }
 }
 
 impl StateReader for ExtendedStateReader {
@@ -37,9 +52,7 @@ impl StateReader for ExtendedStateReader {
                 self.fork_state_reader
                     .as_mut()
                     .map_or(Ok(StarkFelt::default()), |reader| {
-                        reader
-                            .get_storage_at(contract_address, key)
-                            .or(Ok(StarkFelt::default()))
+                        match_node_response(reader.get_storage_at(contract_address, key))
                     })
             })
     }
@@ -51,9 +64,7 @@ impl StateReader for ExtendedStateReader {
                 self.fork_state_reader
                     .as_mut()
                     .map_or(Ok(Nonce::default()), |reader| {
-                        reader
-                            .get_nonce_at(contract_address)
-                            .or(Ok(Nonce::default()))
+                        match_node_response(reader.get_nonce_at(contract_address))
                     })
             })
     }
@@ -65,9 +76,7 @@ impl StateReader for ExtendedStateReader {
                 self.fork_state_reader
                     .as_mut()
                     .map_or(Ok(ClassHash::default()), |reader| {
-                        reader
-                            .get_class_hash_at(contract_address)
-                            .or(Ok(ClassHash::default()))
+                        match_node_response(reader.get_class_hash_at(contract_address))
                     })
             })
     }
@@ -157,7 +166,8 @@ impl StateReader for DictStateReader {
 }
 
 #[allow(clippy::module_name_repetitions)]
-pub struct CheatcodeState {
+#[derive(Default)]
+pub struct CheatnetState {
     pub rolled_contracts: HashMap<ContractAddress, Felt252>,
     pub pranked_contracts: HashMap<ContractAddress, ContractAddress>,
     pub warped_contracts: HashMap<ContractAddress, Felt252>,
@@ -165,20 +175,17 @@ pub struct CheatcodeState {
     pub spoofed_contracts: HashMap<ContractAddress, TxInfoMock>,
     pub spies: Vec<SpyTarget>,
     pub detected_events: Vec<Event>,
+    pub deploy_salt_base: u32,
 }
 
-impl CheatcodeState {
+impl CheatnetState {
+    pub fn increment_deploy_salt_base(&mut self) {
+        self.deploy_salt_base += 1;
+    }
+
     #[must_use]
-    pub fn new() -> Self {
-        CheatcodeState {
-            rolled_contracts: HashMap::new(),
-            pranked_contracts: HashMap::new(),
-            warped_contracts: HashMap::new(),
-            mocked_functions: HashMap::new(),
-            spoofed_contracts: HashMap::new(),
-            spies: vec![],
-            detected_events: vec![],
-        }
+    pub fn get_salt(&self) -> ContractAddressSalt {
+        ContractAddressSalt(StarkFelt::from(self.deploy_salt_base))
     }
 
     #[must_use]
@@ -210,8 +217,12 @@ impl CheatcodeState {
     }
 }
 
-impl Default for CheatcodeState {
-    fn default() -> Self {
-        Self::new()
+fn match_node_response<T: Default>(result: StateResult<T>) -> StateResult<T> {
+    match result {
+        Ok(class_hash) => Ok(class_hash),
+        Err(StateError::StateReadError(msg)) if msg.contains("node") => {
+            Err(StateError::StateReadError(msg))
+        }
+        _ => Ok(Default::default()),
     }
 }

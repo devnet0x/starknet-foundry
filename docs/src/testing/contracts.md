@@ -7,7 +7,7 @@
 > using appropriate release tag.
 >```toml
 > [dependencies]
-> snforge_std = { git = "https://github.com/foundry-rs/starknet-foundry.git", tag = "v0.5.0" }
+> snforge_std = { git = "https://github.com/foundry-rs/starknet-foundry.git", tag = "v0.7.1" }
 > ```
 
 Using unit testing as much as possible is a good practice, as it makes your test suites run faster. However, when
@@ -183,3 +183,9 @@ Running 1 test(s) from src/
 [PASS] package_name::handling_errors
 Tests: 1 passed, 0 failed, 0 skipped
 ```
+
+### Expecting Test Failure
+
+Sometimes the test code failing can be a desired behavior.
+Instead of manually handling it, you can simply mark your test as `#[should_panic(...)]`.
+[See here](./testing.md#expected-failures) for more details.
