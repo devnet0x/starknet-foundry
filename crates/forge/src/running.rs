@@ -12,7 +12,7 @@ use blockifier::state::state_api::State;
 use cairo_felt::Felt252;
 use cairo_vm::serde::deserialize_program::HintParams;
 use cairo_vm::types::relocatable::Relocatable;
-use cheatnet::execution::syscalls::CheatableSyscallHandler;
+use cheatnet::execution::cheatable_syscall_handler::CheatableSyscallHandler;
 use itertools::chain;
 
 use cairo_lang_casm::hints::Hint;
@@ -20,7 +20,7 @@ use cairo_lang_casm::instructions::Instruction;
 use cairo_lang_runner::casm_run::hint_to_hint_params;
 use cairo_lang_runner::SierraCasmRunner;
 use cairo_lang_runner::{Arg, RunnerError};
-use camino::Utf8PathBuf;
+use camino::Utf8Path;
 use cheatnet::constants as cheatnet_constants;
 use cheatnet::forking::state::ForkStateReader;
 use cheatnet::state::{CheatnetState, ExtendedStateReader};
@@ -39,13 +39,14 @@ use starknet_api::transaction::Calldata;
 use test_collector::{ForkConfig, TestCase};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::Sender;
+use tokio::task::JoinHandle;
 use url::Url;
 
 use crate::scarb::ForkTarget;
 use crate::test_case_summary::TestCaseSummary;
 
 use crate::test_execution_syscall_handler::TestExecutionSyscallHandler;
-use crate::{RunnerConfig, RunnerParams};
+use crate::{RunnerConfig, RunnerParams, CACHE_DIR};
 
 use crate::test_execution_syscall_handler::TestExecutionState;
 
@@ -75,25 +76,31 @@ fn build_hints_dict<'b>(
     (hints_dict, string_to_hint)
 }
 
-pub(crate) async fn blocking_run_from_test(
+pub(crate) fn blocking_run_from_test(
     args: Vec<Felt252>,
     case: Arc<TestCase>,
     runner: Arc<SierraCasmRunner>,
     runner_config: Arc<RunnerConfig>,
     runner_params: Arc<RunnerParams>,
-    sender: Option<Sender<()>>,
-) -> Result<TestCaseSummary> {
+    send: Sender<()>,
+    send_shut_down: Sender<()>,
+) -> JoinHandle<Result<TestCaseSummary>> {
     tokio::task::spawn_blocking(move || {
+        // Due to the inability of spawn_blocking to be abruptly cancelled,
+        // a channel is used to receive information indicating
+        // that the execution of the task is no longer necessary.
+        if send.is_closed() {
+            return Err(anyhow::anyhow!("stop spawn_blocking"));
+        }
         run_test_case(
             args,
             &case,
             &runner,
             &runner_config,
             &runner_params,
-            &sender,
+            &send_shut_down,
         )
     })
-    .await?
 }
 
 fn build_context() -> EntryPointExecutionContext {
@@ -151,7 +158,7 @@ pub(crate) fn run_test_case(
     runner: &SierraCasmRunner,
     runner_config: &Arc<RunnerConfig>,
     runner_params: &Arc<RunnerParams>,
-    _sender: &Option<Sender<()>>,
+    _send_shut_down: &Sender<()>,
 ) -> Result<TestCaseSummary> {
     let available_gas = if let Some(available_gas) = &case.available_gas {
         Some(*available_gas)
@@ -217,7 +224,6 @@ pub(crate) fn run_test_case(
         // CairoRunError comes from VirtualMachineError which may come from HintException that originates in the cheatcode processor
         Err(RunnerError::CairoRunError(error)) => Ok(TestCaseSummary::Failed {
             name: case.name.clone(),
-            run_result: None,
             msg: Some(format!(
                 "\n    {}\n",
                 error.to_string().replace(" Custom Hint Error: ", "\n    ")
@@ -231,7 +237,7 @@ pub(crate) fn run_test_case(
 }
 
 fn get_fork_state_reader(
-    workspace_root: &Utf8PathBuf,
+    workspace_root: &Utf8Path,
     fork_targets: &[ForkTarget],
     fork_config: &Option<ForkConfig>,
 ) -> Result<Option<ForkStateReader>> {
@@ -243,7 +249,7 @@ fn get_fork_state_reader(
             Ok(Some(ForkStateReader::new(
                 url,
                 block_id,
-                Some(workspace_root.join(".snfoundry_cache").as_ref()),
+                Some(workspace_root.join(CACHE_DIR).as_ref()),
             )))
         }
         Some(ForkConfig::Id(name)) => {
@@ -264,7 +270,7 @@ fn get_latest_block_number(url: &str) -> Result<BlockId> {
 }
 
 fn find_params_and_build_fork_state_reader(
-    workspace_root: &Utf8PathBuf,
+    workspace_root: &Utf8Path,
     fork_targets: &[ForkTarget],
     fork_alias: &str,
 ) -> Result<Option<ForkStateReader>> {
@@ -293,7 +299,7 @@ fn find_params_and_build_fork_state_reader(
         return Ok(Some(ForkStateReader::new(
             &fork.url,
             block_id,
-            Some(workspace_root.join(".snfoundry_cache").as_ref()),
+            Some(workspace_root.join(CACHE_DIR).as_ref()),
         )));
     }
 
